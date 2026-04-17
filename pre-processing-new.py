@@ -125,6 +125,91 @@ def deskew(img):
         borderMode=cv2.BORDER_REPLICATE
     )
 
+
+# -----------------------------
+# OMR DESKEW (Updated needed to check)
+# -----------------------------
+'''def deskew_omr(img):
+    h, w = img.shape
+
+    # -----------------------------
+    # STEP 1: Focus on LEFT STRIP
+    # -----------------------------
+    left_region = img[:, :int(w * 0.25)]  # left 25%
+
+    # -----------------------------
+    # STEP 2: Edge detection
+    # -----------------------------
+    edges = cv2.Canny(left_region, 50, 150)
+
+    # -----------------------------
+    # STEP 3: Detect lines
+    # -----------------------------
+    lines = cv2.HoughLinesP(
+        edges,
+        1,
+        np.pi / 180,
+        threshold=80,
+        minLineLength=int(h * 0.4),  # long vertical lines
+        maxLineGap=50
+    )
+
+    if lines is None:
+        print("⚠️ No lines → skip deskew")
+        return img
+
+    # -----------------------------
+    # STEP 4: Extract vertical angles
+    # -----------------------------
+    angles = []
+
+    for x1, y1, x2, y2 in lines[:, 0]:
+        angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
+
+        # keep near-vertical lines
+        if abs(angle) > 60:
+            angles.append(angle)
+
+    if len(angles) == 0:
+        print("⚠️ No vertical angles")
+        return img
+
+    median_angle = np.median(angles)
+
+    # -----------------------------
+    # STEP 5: Convert to skew angle
+    # -----------------------------
+    # vertical should be 90°, so:
+    if median_angle > 0:
+        skew_angle = median_angle - 90
+    else:
+        skew_angle = median_angle + 90
+
+    print(f"📐 OMR Skew angle: {skew_angle:.2f}")
+
+    # -----------------------------
+    # STEP 6: Clamp extreme values
+    # -----------------------------
+    if abs(skew_angle) > 10:
+        print("⚠️ Extreme skew ignored")
+        return img
+
+    # -----------------------------
+    # STEP 7: Rotate
+    # -----------------------------
+    M = cv2.getRotationMatrix2D((w // 2, h // 2), skew_angle, 1)
+
+    rotated = cv2.warpAffine(
+        img,
+        M,
+        (w, h),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE
+    )
+
+    return rotated '''
+
+
 # -----------------------------
 # PROCESS SINGLE PDF
 # -----------------------------
