@@ -3,9 +3,9 @@ import json
 import os
 
 # ✅ Correct paths
-BASE_DIR = r"D:/img_process/annotated"
+BASE_DIR = r"G:/"
 IMG_DIR = os.path.join(BASE_DIR, "images", "default")
-ANN_FILE = r"D:/img_process/annotated/annotations/default.json"
+ANN_FILE = r"G:/annotations/default.json"
 
 # load json
 with open(ANN_FILE) as f:
@@ -44,7 +44,7 @@ for item in data["items"]:
             )
 
     # save output
-    out_path = os.path.join(BASE_DIR, f"annotated_{filename}")
+    out_path = os.path.join(r"G:/annotated_images", f"annotated_{filename}")
     cv2.imwrite(out_path, img)
 
     print(f"💾 Saved: {out_path}")

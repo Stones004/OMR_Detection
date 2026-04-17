@@ -37,4 +37,5 @@ annotated/
 debug/
 output/
 output_bubbles/
-output_stage1_2/
+processed_imgs
+output_final

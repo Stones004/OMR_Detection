@@ -6,20 +6,41 @@ import cv2
 import numpy as np
 import os
 
-DPI = 300
-OUTPUT_DIR = "output_stage1_2_3"
+# -----------------------------
+# PATHS
+# -----------------------------
+INPUT_DIR = r"G:/Ans_Scripts"
+OUTPUT_DIR = r"G:/OMR_Detection/processed_imgs"
+
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# -----------------------------
+# GLOBAL COUNTER (persistent)
+# -----------------------------
+COUNTER_FILE = os.path.join(OUTPUT_DIR, "counter.txt")
 
-def save(name, img):
-    path = os.path.join(OUTPUT_DIR, name)
-    cv2.imwrite(path, img)
-    print(f"💾 Saved: {path}")
+def load_counter():
+    if os.path.exists(COUNTER_FILE):
+        return int(open(COUNTER_FILE).read())
+    return 0
 
+def save_counter(counter):
+    with open(COUNTER_FILE, "w") as f:
+        f.write(str(counter))
+
+GLOBAL_COUNTER = load_counter()
+
+def get_next_filename():
+    global GLOBAL_COUNTER
+    name = f"img_{GLOBAL_COUNTER:06d}.png"
+    GLOBAL_COUNTER += 1
+    return name
 
 # -----------------------------
 # STAGE 1: PDF → IMAGE
 # -----------------------------
+DPI = 300
+
 def load_pdf_pages(path):
     doc = fitz.open(path)
 
@@ -39,119 +60,73 @@ def load_pdf_pages(path):
 
     return pages
 
-
 # -----------------------------
 # STAGE 2: PREPROCESS
 # -----------------------------
 def enhance_contrast(img):
     return cv2.createCLAHE(2.0, (8,8)).apply(img)
 
-
 def denoise(img):
     return cv2.GaussianBlur(img, (5,5), 0)
-
 
 def sharpen(img):
     kernel = np.array([[0,-1,0],[-1,5,-1],[0,-1,0]])
     return cv2.filter2D(img, -1, kernel)
 
-
+# -----------------------------
+# ROBUST DESKEW (FIXED)
+# -----------------------------
 def deskew(img):
     edges = cv2.Canny(img, 50, 150)
 
-    lines = cv2.HoughLines(edges, 1, np.pi/180, 200)
+    lines = cv2.HoughLinesP(
+        edges,
+        1,
+        np.pi / 180,
+        threshold=100,
+        minLineLength=500,
+        maxLineGap=50
+    )
 
     if lines is None:
         print("⚠️ No lines → skip deskew")
         return img
 
-    angles = [(theta - np.pi/2) for rho, theta in lines[:,0]]
+    angles = []
+
+    for x1, y1, x2, y2 in lines[:, 0]:
+        angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
+
+        # keep near-horizontal lines only
+        if -30 < angle < 30:
+            angles.append(angle)
+
+    if len(angles) == 0:
+        print("⚠️ No valid angles")
+        return img
+
     median_angle = np.median(angles)
 
-    angle_deg = np.degrees(median_angle)
-    print(f"📐 Skew angle: {angle_deg:.2f}")
+    # clamp extreme errors
+    if abs(median_angle) > 10:
+        print(f"⚠️ Ignoring extreme angle: {median_angle:.2f}")
+        return img
+
+    print(f"📐 Skew angle: {median_angle:.2f}")
 
     h, w = img.shape
-    M = cv2.getRotationMatrix2D((w//2, h//2), angle_deg, 1)
+    M = cv2.getRotationMatrix2D((w // 2, h // 2), median_angle, 1)
 
-    return cv2.warpAffine(img, M, (w, h),
-                          flags=cv2.INTER_LINEAR,
-                          borderMode=cv2.BORDER_REPLICATE)
-
-
-# -----------------------------
-# STAGE 3.3.1: PROJECTION SPLIT
-# -----------------------------
-def projection_split(img):
-    # horizontal projection
-    proj = np.sum(img, axis=1)
-
-    proj = proj / np.max(proj)
-
-    # smooth
-    proj_smooth = cv2.GaussianBlur(proj.reshape(-1,1), (51,1), 0).flatten()
-
-    # find valleys
-    threshold = 0.5
-    valleys = np.where(proj_smooth < threshold)[0]
-
-    if len(valleys) < 3:
-        return None, 0.0
-
-    # pick 3 best split points (approx)
-    splits = np.linspace(0, len(valleys)-1, 4, dtype=int)[1:-1]
-    split_points = valleys[splits]
-
-    confidence = 1 - np.mean(proj_smooth[valleys])
-
-    return split_points, confidence
-
+    return cv2.warpAffine(
+        img,
+        M,
+        (w, h),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE
+    )
 
 # -----------------------------
-# STAGE 3.3.2: SPLIT FROM PEAKS
-# -----------------------------
-def split_from_peaks(img, peaks):
-    h = img.shape[0]
-
-    points = [0] + list(peaks) + [h]
-
-    bands = []
-
-    for i in range(len(points)-1):
-        y1, y2 = points[i], points[i+1]
-        band = img[y1:y2]
-        bands.append((i, band))
-
-    return bands
-
-
-# -----------------------------
-# STAGE 3.3.3: ORCHESTRATOR
-# -----------------------------
-def band_split_orchestrator(img):
-
-    peaks, conf = projection_split(img)
-
-    if peaks is not None and conf >= 0.65:
-        print(f"✅ OpenCV band split (conf={conf:.2f})")
-        return split_from_peaks(img, peaks)
-
-    else:
-        print("⚠️ Fallback to equal split")
-
-        h = img.shape[0]
-        band_h = h // 4
-
-        bands = []
-        for i in range(4):
-            band = img[i*band_h:(i+1)*band_h]
-            bands.append((i, band))
-
-        return bands
-
-
-# -----------------------------
-# PIPELINE (1 + 2 + 3)
+# PROCESS SINGLE PDF
 # -----------------------------
 def process_pdf(path):
 
@@ -159,30 +134,51 @@ def process_pdf(path):
 
     for page_num, img in pages:
 
-        if page_num == 5 :
+        print(f"\n🚀 Processing Page {page_num}")
 
-            print(f"\n🚀 Processing Page {page_num}")
+        # preprocessing pipeline
+        c = enhance_contrast(img)
+        d = denoise(c)
+        s = sharpen(d)
+        final = deskew(s)
 
-            # Stage 2
-            c = enhance_contrast(img)
-            d = denoise(c)
-            s = sharpen(d)
-            final = deskew(s)
+        filename = get_next_filename()
+        save_path = os.path.join(OUTPUT_DIR, filename)
 
-            save(f"page_{page_num}_final.png", final)
+        cv2.imwrite(save_path, final)
+        print(f"💾 Saved: {save_path}")
 
-            # Stage 3
-            bands = band_split_orchestrator(final)
+# -----------------------------
+# PROCESS ALL PDFs
+# -----------------------------
+def process_all_pdfs(input_dir):
 
-            for band_idx, band in bands:
-                save(f"page_{page_num}_band_{band_idx}.png", band)
+    pdf_files = [f for f in os.listdir(input_dir) if f.lower().endswith(".pdf")]
 
+    if not pdf_files:
+        print("❌ No PDFs found")
+        return
+
+    print(f"📂 Found {len(pdf_files)} PDFs")
+
+    for pdf_name in pdf_files:
+        pdf_path = os.path.join(input_dir, pdf_name)
+
+        print("\n" + "="*50)
+        print(f"📘 Processing: {pdf_name}")
+        print("="*50)
+
+        try:
+            process_pdf(pdf_path)
+        except Exception as e:
+            print(f"❌ Error: {e}")
+
+    # save counter after all processing
+    save_counter(GLOBAL_COUNTER)
 
 # -----------------------------
 # RUN
 # -----------------------------
-pdf_path = r"C:/Users/Acer/Downloads/2220278184522039.pdf"
+process_all_pdfs(INPUT_DIR)
 
-process_pdf(pdf_path)
-
-print("\n✅ STAGE 1 + 2 + 3 COMPLETE")
+print("\n✅ ALL PDFs PROCESSED")

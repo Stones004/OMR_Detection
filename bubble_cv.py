@@ -1,306 +1,112 @@
 import cv2
 import numpy as np
+import json
 import os
-import pytesseract
 
-# =========================
-# HARD-CODED OMR REGION
-# =========================
-X1, Y1 = 80, 150
-X2, Y2 = 310, 3450
+ANNOTATION_FILE = r"G:/annotations/default.json"
+IMAGE_DIR = r"G:/images/default"
+OUTPUT_DIR = r"G:/OMR_Detection/output_final"
 
-OUTPUT_DIR = "output_bubbles"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # =========================
-# PARAMETERS (LOOSE DETECTION)
+# LOAD JSON
 # =========================
-MIN_AREA = 120
-MAX_AREA = 2500
-CIRCULARITY_THRESH = 0.5
-SOLIDITY_THRESH = 0.4
-
+with open(ANNOTATION_FILE, "r") as f:
+    data = json.load(f)
 
 # =========================
-# PREPROCESS
+# FILLED DETECTION
 # =========================
-def preprocess(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+def is_filled(gray, bbox):
 
-    blur = cv2.GaussianBlur(gray, (5,5), 0)
+    x, y, w, h = map(int, bbox)
 
-    thresh = cv2.adaptiveThreshold(
-        blur, 255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY_INV,
-        15, 3
-    )
+    crop = gray[y:y+h, x:x+w]
 
-    return gray, thresh
-
-
-# =========================
-# FIND BUBBLES (LOOSE)
-# =========================
-def find_bubbles(thresh):
-    contours, _ = cv2.findContours(
-        thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
-
-    bubbles = []
-
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-
-        if area < MIN_AREA or area > MAX_AREA:
-            continue
-
-        perimeter = cv2.arcLength(cnt, True)
-        if perimeter == 0:
-            continue
-
-        circularity = 4 * np.pi * area / (perimeter * perimeter)
-
-        if circularity < CIRCULARITY_THRESH:
-            continue
-
-        # solidity
-        hull = cv2.convexHull(cnt)
-        hull_area = cv2.contourArea(hull)
-
-        if hull_area == 0:
-            continue
-
-        solidity = area / hull_area
-
-        if solidity < SOLIDITY_THRESH:
-            continue
-
-        bubbles.append(cnt)
-
-    return bubbles
-
-
-# =========================
-# GROUP INTO ROWS
-# =========================
-def group_rows(contours):
-    centers = []
-
-    for cnt in contours:
-        x, y, w, h = cv2.boundingRect(cnt)
-        cx = x + w//2
-        cy = y + h//2
-        centers.append((cx, cy, cnt))
-
-    centers.sort(key=lambda x: x[1])
-
-    rows = []
-    current_row = []
-    threshold = 25
-
-    for pt in centers:
-        if not current_row:
-            current_row.append(pt)
-            continue
-
-        if abs(pt[1] - current_row[0][1]) < threshold:
-            current_row.append(pt)
-        else:
-            rows.append(current_row)
-            current_row = [pt]
-
-    if current_row:
-        rows.append(current_row)
-
-    return rows
-
-
-# =========================
-# SORT ROW LEFT → RIGHT
-# =========================
-def sort_row(row):
-    return sorted(row, key=lambda x: x[0])
-
-
-# =========================
-# FILLED CHECK (ROBUST)
-# =========================
-def is_filled(gray, cnt):
-    mask = np.zeros(gray.shape, dtype="uint8")
-    cv2.drawContours(mask, [cnt], -1, 255, -1)
-
-    mean_val = cv2.mean(gray, mask=mask)[0]
-
-    return mean_val < 160   # 🔥 key threshold
-
-
-
-
-'''def is_filled(gray, cnt):
-    mask = np.zeros(gray.shape, dtype="uint8")
-    cv2.drawContours(mask, [cnt], -1, 255, -1)
-
-    roi = cv2.bitwise_and(gray, gray, mask=mask)
-
-    dark_pixels = np.sum(roi < 120)
-    total_pixels = np.sum(mask == 255)
-
-    if total_pixels == 0:
+    if crop.size == 0:
         return False
 
-    fill_ratio = dark_pixels / total_pixels
+    # threshold inside bubble
+    _, thresh = cv2.threshold(crop, 150, 255, cv2.THRESH_BINARY_INV)
 
-    return fill_ratio > 0.25'''
+    filled_pixels = cv2.countNonZero(thresh)
+    total_pixels = crop.shape[0] * crop.shape[1]
 
+    fill_ratio = filled_pixels / total_pixels
 
-# =========================
-# DRAW RESULTS
-# =========================
-def draw(img, results):
-    out = img.copy()
-
-    for (x, y, w, h, filled) in results:
-        color = (0, 0, 255) if filled else (0, 255, 0)
-        cv2.rectangle(out, (x, y), (x+w, y+h), color, 2)
-
-    return out
-
-def filter_real_bubbles(contours):
-    # get all areas
-    areas = [cv2.contourArea(c) for c in contours]
-
-    if len(areas) == 0:
-        return []
-
-    median_area = np.median(areas)
-
-    filtered = []
-
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-
-        # keep only similar-sized blobs
-        if not (0.6 * median_area < area < 1.4 * median_area):
-            continue
-
-        x, y, w, h = cv2.boundingRect(cnt)
-
-        aspect_ratio = w / float(h)
-
-        # must be roughly square
-        if aspect_ratio < 0.7 or aspect_ratio > 1.3:
-            continue
-
-        filtered.append(cnt)
-
-    return filtered
-
+    return fill_ratio > 0.4
 
 # =========================
-# MAIN PIPELINE
+# PROCESS IMAGE
 # =========================
-def detect_bubbles(image_path):
+def process_item(item):
 
-    print("📥 Loading image...")
-    img = cv2.imread(image_path)
+    img_path = os.path.join(IMAGE_DIR, item["image"]["path"])
+    print(f"\n📥 Processing: {img_path}")
 
-    print("✂️ Cropping OMR region...")
-    omr = img[Y1:Y2, X1:X2]
+    img = cv2.imread(img_path)
 
-    # remove extreme top/bottom noise
-    h = omr.shape[0]
-    omr = omr[int(0.03*h):int(0.97*h), :]
+    if img is None:
+        print("❌ Failed to load")
+        return
 
-    print("🔍 Preprocessing...")
-    gray, thresh = preprocess(omr)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    print("🧠 Detecting contours...")
-    contours = find_bubbles(thresh)
-    contours = filter_real_bubbles(contours)
-    print(f"✔ Raw contours: {len(contours)}")
+    omr_bbox = None
+    bubble_bboxes = []
 
-    print("📊 Grouping into rows...")
-    rows = group_rows(contours)
-    print(f"✔ Rows detected: {len(rows)}")
+    # extract annotations
+    for ann in item["annotations"]:
+        label_id = ann["label_id"]
+
+        if label_id == 0:  # OMR
+            omr_bbox = ann["bbox"]
+
+        elif label_id == 2:  # bubbles
+            bubble_bboxes.append(ann["bbox"])
+
+    if omr_bbox is None:
+        print("⚠️ No OMR found")
+        return
+
+    # crop OMR region
+    x, y, w, h = map(int, omr_bbox)
+    omr = img[y:y+h, x:x+w]
+    gray_omr = gray[y:y+h, x:x+w]
 
     results = []
 
-    print("🎯 Classifying bubbles...")
-    for row in rows:
-        row_sorted = sort_row(row)
+    for bbox in bubble_bboxes:
 
-        for (cx, cy, cnt) in row_sorted:
-            filled = is_filled(gray, cnt)
+        bx, by, bw, bh = map(int, bbox)
 
-            x, y, w, h = cv2.boundingRect(cnt)
-            results.append((x, y, w, h, filled))
+        # adjust relative to OMR crop
+        bx_rel = bx - x
+        by_rel = by - y
 
-    filled_count = sum([1 for r in results if r[4]])
-    print(f"✅ Filled bubbles: {filled_count}")
+        filled = is_filled(gray, bbox)
 
-    print("🖊 Drawing results...")
-    out = draw(omr, results)
+        results.append((bx_rel, by_rel, bw, bh, filled))
 
-    cv2.imwrite(f"{OUTPUT_DIR}/final_result.png", out)
-    print("💾 Saved: output_bubbles/final_result.png")
+    # draw
+    out = omr.copy()
 
-    print("🔤 Extracting text near filled bubbles...")
+    for (bx, by, bw, bh, filled) in results:
+        color = (0,0,255) if filled else (0,255,0)
+        cv2.rectangle(out, (bx, by), (bx+bw, by+bh), color, 2)
 
-    # sort top → bottom (important)
-    results_sorted = sorted(results, key=lambda r: r[1])
+    name = item["image"]["path"].split(".")[0]
+    out_path = os.path.join(OUTPUT_DIR, f"{name}_result.png")
 
-    texts = extract_text_from_bubbles(omr, results_sorted)
+    cv2.imwrite(out_path, out)
 
-    print("\n📊 FINAL OUTPUT:")
-    for t in texts:
-        print(f"📍 {t['bbox']} → {t['text']}")
-
-    return results
-
-
-def extract_text_from_bubbles(img, bubbles):
-    results = []
-
-    os.makedirs("debug", exist_ok=True)
-
-    for (x, y, w, h, filled) in bubbles:
-        if not filled:
-            continue
-
-        # 🔥 crop region to the RIGHT of bubble
-        x1 = x + w + 10
-        x2 = x1 + 100
-
-        y1 = max(0, y - 5)
-        y2 = y + h + 5
-
-        crop = img[y1:y2, x1:x2]
-
-        if crop.size == 0:
-            continue
-
-        # preprocess for OCR
-        gray_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        _, thresh_crop = cv2.threshold(gray_crop, 150, 255, cv2.THRESH_BINARY)
-
-        # OCR
-        text = pytesseract.image_to_string(
-            thresh_crop,
-            config="--psm 10 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyz"
-        )
-
-        print(f"RAW: '{text}'")
-
-        results.append({
-            "text": text.strip(),
-            "bbox": (x, y, w, h)
-        })
-
-    return results
+    print(f"✔ Bubbles processed: {len(results)}")
 
 # =========================
 # RUN
 # =========================
-if __name__ == "__main__":
-    detect_bubbles(r"D:/img_process/annotated/annotated_page_5_final.png")
+for item in data["items"]:
+    process_item(item)
+
+print("\n✅ DONE")
