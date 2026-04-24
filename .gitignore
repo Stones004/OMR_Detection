@@ -39,3 +39,6 @@ output/
 output_bubbles/
 processed_imgs
 output_final
+synthetic_data
+synthetic_data_processed
+synthetic_labels

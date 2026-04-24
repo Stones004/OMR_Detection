@@ -9,10 +9,13 @@ import os
 # -----------------------------
 # PATHS
 # -----------------------------
-INPUT_DIR = r"G:/Ans_Scripts"
-OUTPUT_DIR = r"G:/OMR_Detection/processed_imgs"
+#INPUT_DIR = r"G:/raw_ans_scripts"
+INPUT_DIR = r"G:\OMR_Detection\synthetic_data"
+#OUTPUT_DIR = r"G:/OMR_Detection/processed_imgs"
+OUTPUT_DIR = r"G:\OMR_Detection\synthetic_data_processed"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 
 # -----------------------------
 # GLOBAL COUNTER (persistent)
@@ -56,7 +59,7 @@ def load_pdf_pages(path):
         img = img.reshape(pix.h, pix.w)
 
         pages.append((i, img))
-        print(f"📄 Loaded page {i}")
+    print(f"Loaded page {i}")
 
     return pages
 
@@ -102,17 +105,17 @@ def deskew(img):
             angles.append(angle)
 
     if len(angles) == 0:
-        print("⚠️ No valid angles")
+        print("No valid angles")
         return img
 
     median_angle = np.median(angles)
 
     # clamp extreme errors
     if abs(median_angle) > 10:
-        print(f"⚠️ Ignoring extreme angle: {median_angle:.2f}")
+        print(f"Ignoring extreme angle: {median_angle:.2f}")
         return img
 
-    print(f"📐 Skew angle: {median_angle:.2f}")
+    print(f"Skew angle: {median_angle:.2f}")
 
     h, w = img.shape
     M = cv2.getRotationMatrix2D((w // 2, h // 2), median_angle, 1)
@@ -211,52 +214,85 @@ def deskew(img):
 
 
 # -----------------------------
-# PROCESS SINGLE PDF
+# CORE PIPELINE
 # -----------------------------
-def process_pdf(path):
+def run_pipeline(img):
+    """Applies the preprocessing steps: contrast, denoise, sharpen, deskew."""
+    c = enhance_contrast(img)
+    d = denoise(c)
+    s = sharpen(d)
+    final = deskew(s)
+    return final
 
+def save_result(img):
+    """Generates next filename and saves the image."""
+    filename = get_next_filename()
+    save_path = os.path.join(OUTPUT_DIR, filename)
+    cv2.imwrite(save_path, img)
+    print(f"Saved: {save_path}")
+
+# -----------------------------
+# PROCESS INDIVIDUAL FILES
+# -----------------------------
+def process_image_file(path):
+    print(f"\nProcessing Image: {os.path.basename(path)}")
+    img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        print(f"Could not read image: {path}")
+        return
+
+    final = run_pipeline(img)
+    save_result(final)
+
+def process_pdf(path):
+    print(f"\nProcessing PDF: {os.path.basename(path)}")
     pages = load_pdf_pages(path)
 
     for page_num, img in pages:
-
-        print(f"\n🚀 Processing Page {page_num}")
-
-        # preprocessing pipeline
-        c = enhance_contrast(img)
-        d = denoise(c)
-        s = sharpen(d)
-        final = deskew(s)
-
-        filename = get_next_filename()
-        save_path = os.path.join(OUTPUT_DIR, filename)
-
-        cv2.imwrite(save_path, final)
-        print(f"💾 Saved: {save_path}")
+        print(f"Processing Page {page_num}")
+        final = run_pipeline(img)
+        save_result(final)
 
 # -----------------------------
-# PROCESS ALL PDFs
+# MAIN DISPATCHER
 # -----------------------------
-def process_all_pdfs(input_dir):
-
-    pdf_files = [f for f in os.listdir(input_dir) if f.lower().endswith(".pdf")]
-
-    if not pdf_files:
-        print("❌ No PDFs found")
+def process_all(input_path):
+    # Support both directory and single file
+    if os.path.isfile(input_path):
+        target_files = [os.path.basename(input_path)]
+        base_dir = os.path.dirname(input_path)
+    elif os.path.isdir(input_path):
+        target_files = os.listdir(input_path)
+        base_dir = input_path
+    else:
+        print(f"Path not found: {input_path}")
         return
 
-    print(f"📂 Found {len(pdf_files)} PDFs")
+    # Filter supported extensions
+    valid_extensions = ('.pdf', '.jpg', '.jpeg', '.png', '.bmp', '.tiff')
+    to_process = [f for f in target_files if f.lower().endswith(valid_extensions)]
 
-    for pdf_name in pdf_files:
-        pdf_path = os.path.join(input_dir, pdf_name)
+    if not to_process:
+        print(f"No supported files found in: {input_path}")
+        return
+
+    print(f"Found {len(to_process)} files to process")
+
+    for filename in to_process:
+        full_path = os.path.join(base_dir, filename)
+        ext = os.path.splitext(filename)[1].lower()
 
         print("\n" + "="*50)
-        print(f"📘 Processing: {pdf_name}")
+        print(f"File: {filename}")
         print("="*50)
 
         try:
-            process_pdf(pdf_path)
+            if ext == '.pdf':
+                process_pdf(full_path)
+            else:
+                process_image_file(full_path)
         except Exception as e:
-            print(f"❌ Error: {e}")
+            print(f"Error processing {filename}: {e}")
 
     # save counter after all processing
     save_counter(GLOBAL_COUNTER)
@@ -264,6 +300,6 @@ def process_all_pdfs(input_dir):
 # -----------------------------
 # RUN
 # -----------------------------
-process_all_pdfs(INPUT_DIR)
+process_all(INPUT_DIR)
 
-print("\n✅ ALL PDFs PROCESSED")
+print("\nALL PROCESSING COMPLETED")
